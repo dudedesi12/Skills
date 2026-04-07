@@ -164,75 +164,29 @@ export class BaseAgent<TInput, TOutput> {
   }
 
   private async checkBudget(estimatedCost: number): Promise<boolean> {
-    const { data } = await supabase
-      .from("agent_budgets")
-      .select("*")
-      .eq("agent_name", this.config.name)
-      .single();
-
+    const { data } = await supabase.from("agent_budgets").select("*").eq("agent_name", this.config.name).single();
     if (!data) return true;
-
     const now = new Date();
-    const lastDaily = new Date(data.last_reset_daily);
-    const lastMonthly = new Date(data.last_reset_monthly);
-
-    let todaySpent = data.total_spent_today_usd;
-    let monthSpent = data.total_spent_month_usd;
-
-    if (now.toDateString() !== lastDaily.toDateString()) {
-      todaySpent = 0;
-      await supabase
-        .from("agent_budgets")
-        .update({ total_spent_today_usd: 0, last_reset_daily: now.toISOString() })
-        .eq("agent_name", this.config.name);
-    }
-
-    if (now.getMonth() !== lastMonthly.getMonth()) {
-      monthSpent = 0;
-      await supabase
-        .from("agent_budgets")
-        .update({ total_spent_month_usd: 0, last_reset_monthly: now.toISOString() })
-        .eq("agent_name", this.config.name);
-    }
-
+    let todaySpent = now.toDateString() !== new Date(data.last_reset_daily).toDateString() ? 0 : data.total_spent_today_usd;
+    let monthSpent = now.getMonth() !== new Date(data.last_reset_monthly).getMonth() ? 0 : data.total_spent_month_usd;
     if (todaySpent + estimatedCost > data.daily_limit_usd) return false;
     if (monthSpent + estimatedCost > data.monthly_limit_usd) return false;
-
     return true;
   }
 
-  private async log(
-    level: "info" | "warn" | "error",
-    message: string,
-    metadata?: Record<string, unknown>
-  ): Promise<void> {
+  private async log(level: "info" | "warn" | "error", message: string, metadata?: Record<string, unknown>): Promise<void> {
     try {
-      await supabase.from("agent_logs").insert({
-        agent_name: this.config.name,
-        level,
-        message,
-        metadata: metadata ?? null,
-      });
-    } catch {
-      console.error(`[${this.config.name}] Failed to write log: ${message}`);
-    }
+      await supabase.from("agent_logs").insert({ agent_name: this.config.name, level, message, metadata: metadata ?? null });
+    } catch { console.error(`[${this.config.name}] Log failed: ${message}`); }
   }
 
   private async updateBudget(cost: number): Promise<void> {
-    const { data } = await supabase
-      .from("agent_budgets")
-      .select("total_spent_today_usd, total_spent_month_usd")
-      .eq("agent_name", this.config.name)
-      .single();
-
+    const { data } = await supabase.from("agent_budgets").select("total_spent_today_usd, total_spent_month_usd").eq("agent_name", this.config.name).single();
     if (data) {
-      await supabase
-        .from("agent_budgets")
-        .update({
-          total_spent_today_usd: data.total_spent_today_usd + cost,
-          total_spent_month_usd: data.total_spent_month_usd + cost,
-        })
-        .eq("agent_name", this.config.name);
+      await supabase.from("agent_budgets").update({
+        total_spent_today_usd: data.total_spent_today_usd + cost,
+        total_spent_month_usd: data.total_spent_month_usd + cost,
+      }).eq("agent_name", this.config.name);
     }
   }
 
@@ -242,58 +196,23 @@ export class BaseAgent<TInput, TOutput> {
   ): Promise<AgentResult<TOutput>> {
     const taskId = crypto.randomUUID();
 
-    // Validate input
     const parseResult = this.config.inputSchema.safeParse(rawInput);
     if (!parseResult.success) {
-      await this.log("error", "Input validation failed", {
-        errors: parseResult.error.flatten(),
-      });
-      return {
-        success: false,
-        data: null,
-        error: `Invalid input: ${parseResult.error.issues.map((i) => i.message).join(", ")}`,
-        tokenUsage: 0,
-        costUsd: 0,
-        taskId,
-      };
+      await this.log("error", "Input validation failed", { errors: parseResult.error.flatten() });
+      return { success: false, data: null, error: `Invalid input: ${parseResult.error.issues.map((i) => i.message).join(", ")}`, tokenUsage: 0, costUsd: 0, taskId };
     }
 
-    // Check rate limit
     if (!this.checkRateLimit()) {
       await this.log("warn", "Rate limit exceeded");
-      return {
-        success: false,
-        data: null,
-        error: "Rate limit exceeded. Try again in a moment.",
-        tokenUsage: 0,
-        costUsd: 0,
-        taskId,
-      };
+      return { success: false, data: null, error: "Rate limit exceeded. Try again in a moment.", tokenUsage: 0, costUsd: 0, taskId };
     }
 
-    // Check budget
-    const estimatedCost = 0.001;
-    const withinBudget = await this.checkBudget(estimatedCost);
-    if (!withinBudget) {
+    if (!(await this.checkBudget(0.001))) {
       await this.log("warn", "Budget limit reached");
-      return {
-        success: false,
-        data: null,
-        error: "Agent budget limit reached for this period.",
-        tokenUsage: 0,
-        costUsd: 0,
-        taskId,
-      };
+      return { success: false, data: null, error: "Agent budget limit reached for this period.", tokenUsage: 0, costUsd: 0, taskId };
     }
 
-    // Create task record
-    await supabase.from("agent_tasks").insert({
-      id: taskId,
-      agent_name: this.config.name,
-      agent_version: version,
-      status: "processing",
-      input: parseResult.data,
-    });
+    await supabase.from("agent_tasks").insert({ id: taskId, agent_name: this.config.name, agent_version: version, status: "processing", input: parseResult.data });
 
     // Execute with retries
     let lastError: string = "";
@@ -306,36 +225,15 @@ export class BaseAgent<TInput, TOutput> {
         const response = result.response;
         const text = response.text();
 
-        const tokenUsage =
-          (response.usageMetadata?.totalTokenCount) ?? 0;
-        const costUsd =
-          (tokenUsage / 1_000_000) * this.config.costPerMillionTokens;
-
+        const tokenUsage = response.usageMetadata?.totalTokenCount ?? 0;
+        const costUsd = (tokenUsage / 1_000_000) * this.config.costPerMillionTokens;
         const output = this.parseOutput(text);
 
-        // Update task as completed
-        await supabase
-          .from("agent_tasks")
-          .update({
-            status: "completed",
-            output,
-            token_usage: tokenUsage,
-            cost_usd: costUsd,
-            completed_at: new Date().toISOString(),
-          })
-          .eq("id", taskId);
-
+        await supabase.from("agent_tasks").update({ status: "completed", output, token_usage: tokenUsage, cost_usd: costUsd, completed_at: new Date().toISOString() }).eq("id", taskId);
         await this.updateBudget(costUsd);
         await this.log("info", "Task completed", { tokenUsage, costUsd });
 
-        return {
-          success: true,
-          data: output as TOutput,
-          error: null,
-          tokenUsage,
-          costUsd,
-          taskId,
-        };
+        return { success: true, data: output as TOutput, error: null, tokenUsage, costUsd, taskId };
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
         await this.log("error", `Attempt ${attempt + 1} failed: ${lastError}`);
@@ -346,24 +244,8 @@ export class BaseAgent<TInput, TOutput> {
       }
     }
 
-    // All retries failed
-    await supabase
-      .from("agent_tasks")
-      .update({
-        status: "failed",
-        error: lastError,
-        retry_count: this.config.maxRetries,
-      })
-      .eq("id", taskId);
-
-    return {
-      success: false,
-      data: null,
-      error: `Agent failed after ${this.config.maxRetries + 1} attempts: ${lastError}`,
-      tokenUsage: 0,
-      costUsd: 0,
-      taskId,
-    };
+    await supabase.from("agent_tasks").update({ status: "failed", error: lastError, retry_count: this.config.maxRetries }).eq("id", taskId);
+    return { success: false, data: null, error: `Agent failed after ${this.config.maxRetries + 1} attempts: ${lastError}`, tokenUsage: 0, costUsd: 0, taskId };
   }
 
   protected buildPrompt(input: TInput): string {
@@ -510,106 +392,59 @@ Each agent gets a health check at `GET /api/agents/[agentName]/health`. See `ref
 
 ## Agent Versioning with A/B Routing
 
-Support multiple agent versions and route traffic between them:
+Support running v1 and v2 of an agent simultaneously with weighted traffic routing:
 
 ```typescript
 // lib/agents/version-router.ts
-interface VersionConfig {
-  v1Weight: number; // 0-100, percentage of traffic to v1
-  v2Weight: number; // remainder goes to v2
-}
-
-const versionConfigs: Record<string, VersionConfig> = {
-  content: { v1Weight: 80, v2Weight: 20 },
-  analysis: { v1Weight: 50, v2Weight: 50 },
+const versionConfigs: Record<string, { v1Weight: number }> = {
+  content: { v1Weight: 80 },   // 80% v1, 20% v2
+  analysis: { v1Weight: 50 },  // 50/50 split
 };
 
 export function selectVersion(agentName: string): string {
   const config = versionConfigs[agentName];
   if (!config) return "v1";
-
-  const roll = Math.random() * 100;
-  return roll < config.v1Weight ? "v1" : "v2";
+  return Math.random() * 100 < config.v1Weight ? "v1" : "v2";
 }
 ```
 
-Use it in the API route by replacing the version header logic:
-
-```typescript
-// In app/api/agents/[agentName]/route.ts — replace the version line:
-import { selectVersion } from "@/lib/agents/version-router";
-
-// Inside POST handler:
-const version = request.headers.get("x-agent-version") ?? selectVersion(agentName);
-```
+In the API route, replace the version line: `const version = request.headers.get("x-agent-version") ?? selectVersion(agentName);`
 
 ## Calling Agents from Your Frontend
 
 ```typescript
 // lib/agents/client.ts
-interface AgentResponse<T> {
-  success: boolean;
-  data: T | null;
-  error: string | null;
-  tokenUsage: number;
-  costUsd: number;
-  taskId: string;
-}
-
 export async function callAgent<T>(
   agentName: string,
   input: Record<string, unknown>,
   version?: string
-): Promise<AgentResponse<T>> {
+): Promise<{ success: boolean; data: T | null; error: string | null; tokenUsage: number; costUsd: number; taskId: string }> {
   try {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (version) {
-      headers["x-agent-version"] = version;
-    }
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (version) headers["x-agent-version"] = version;
 
     const response = await fetch(`/api/agents/${agentName}`, {
       method: "POST",
       headers,
       body: JSON.stringify(input),
     });
-
-    const result: AgentResponse<T> = await response.json();
-    return result;
+    return await response.json();
   } catch (err) {
-    return {
-      success: false,
-      data: null,
-      error: err instanceof Error ? err.message : "Network error",
-      tokenUsage: 0,
-      costUsd: 0,
-      taskId: "",
-    };
+    return { success: false, data: null, error: err instanceof Error ? err.message : "Network error", tokenUsage: 0, costUsd: 0, taskId: "" };
   }
 }
 ```
 
-Usage from a React component:
+Usage example:
 
 ```typescript
-// Example: calling the scraper agent from a component
-import { callAgent } from "@/lib/agents/client";
-
-async function handleScrape() {
-  const result = await callAgent("scraper", {
-    url: "https://example.com/products",
-    selectors: ["title", "price", "description"],
-    format: "json",
-  });
-
-  if (result.success) {
-    console.log("Scraped data:", result.data);
-    console.log("Cost:", result.costUsd);
-  } else {
-    console.error("Scrape failed:", result.error);
-  }
-}
+const result = await callAgent("scraper", {
+  url: "https://example.com/products",
+  selectors: ["title", "price"],
+  format: "json",
+});
+if (result.success) console.log(result.data);
+else console.error(result.error);
 ```
 
 ## Reference Files
