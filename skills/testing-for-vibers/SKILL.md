@@ -9,22 +9,16 @@ You don't need to be a QA engineer to ship reliable code. This skill gives you p
 
 ## Playwright Setup for Next.js
 
-Playwright is a browser automation tool that clicks through your app like a real user would. It opens a real browser, fills in forms, clicks buttons, and checks that the right things appear on screen.
+Playwright is a browser automation tool that clicks through your app like a real user would.
 
 ### Install Playwright
-
-Run this in your project folder (the folder that has your `package.json`):
 
 ```bash
 npm install -D @playwright/test
 npx playwright install chromium
 ```
 
-This installs Playwright and downloads a Chromium browser for testing.
-
 ### Playwright Config
-
-This file tells Playwright how to find and run your tests. Create it at the root of your project (same level as `package.json`):
 
 ```typescript
 // playwright.config.ts
@@ -58,11 +52,7 @@ export default defineConfig({
 });
 ```
 
-**What this does:** It tells Playwright to look for tests in `tests/e2e/`, run them in Chromium, and automatically start your Next.js dev server before testing.
-
 ### Your First Test
-
-This test visits your homepage and checks that it loaded:
 
 ```typescript
 // tests/e2e/homepage.spec.ts
@@ -86,26 +76,9 @@ Run it with:
 npx playwright test
 ```
 
-### Add Test Scripts to package.json
-
-```json
-// package.json (add to "scripts" section)
-{
-  "scripts": {
-    "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui",
-    "test:e2e:headed": "playwright test --headed"
-  }
-}
-```
-
-- `test:e2e` runs tests in the background (no browser window appears)
-- `test:e2e:ui` opens a visual tool where you can watch tests run
-- `test:e2e:headed` opens an actual browser window so you can see what happens
-
 ## Auto-Generating E2E Tests from Page Descriptions
 
-You can describe what a page does and generate tests from that description. Here is a pattern for a signup page:
+Describe what a page does and generate tests from that description:
 
 ```typescript
 // tests/e2e/auth/signup.spec.ts
@@ -152,7 +125,7 @@ test.describe("Signup Page", () => {
 
 ## API Route Testing Patterns
 
-API routes (the files in `app/api/`) need testing too. You can test them directly without a browser by sending HTTP requests:
+Test API routes directly without a browser:
 
 ```typescript
 // tests/e2e/api/health.spec.ts
@@ -264,8 +237,6 @@ jobs:
           vercel-args: "--prod"
 ```
 
-**What this does:** Every time you open a PR, GitHub runs your tests automatically. If the tests fail, the PR shows a red X. If they pass, you see a green checkmark. When you merge to `main`, it deploys to production.
-
 ## Smoke Tests for Critical User Flows
 
 Smoke tests check the most important paths in your app. If these break, nothing else matters.
@@ -367,11 +338,9 @@ Create the Lighthouse config:
 }
 ```
 
-**What this does:** It builds your app, loads 3 pages, and checks they score at least 80% for performance, 90% for accessibility, and 90% for SEO.
-
 ## Database Seeding for Test Environments
 
-Seeding means filling your database with fake data so tests have something to work with. Create a seed script:
+Seeding means filling your database with fake data so tests have something to work with:
 
 ```typescript
 // scripts/seed-test-data.ts
@@ -494,9 +463,7 @@ npx playwright test --ui
 npx playwright show-report
 ```
 
-**In CI (automatic on every PR):**
-
-Tests run automatically via the GitHub Actions workflow above. You do not need to do anything extra. When a test fails in CI, download the `playwright-report` artifact from the GitHub Actions run to see screenshots and traces of what went wrong.
+**In CI:** Tests run automatically via the GitHub Actions workflow above. When a test fails, download the `playwright-report` artifact from the GitHub Actions run to see screenshots and traces.
 
 ## Visual Regression Testing Basics
 
@@ -529,10 +496,4 @@ test.describe("Visual Regression", () => {
 });
 ```
 
-The first time you run these tests, Playwright saves "golden" screenshots. On subsequent runs, it compares new screenshots to the golden ones. To update the golden screenshots after an intentional design change:
-
-```bash
-npx playwright test --update-snapshots
-```
-
-**What `maxDiffPixelRatio: 0.01` means:** Up to 1% of pixels can be different before the test fails. This prevents false failures from tiny rendering differences across machines.
+The first time you run these tests, Playwright saves "golden" screenshots. On subsequent runs, it compares new screenshots to the golden ones. To update the golden screenshots after an intentional design change, run `npx playwright test --update-snapshots`.

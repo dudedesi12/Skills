@@ -20,7 +20,7 @@ npm install -D react-email
 
 1. Go to [resend.com](https://resend.com) and create an account
 2. Go to **API Keys** and create a new key
-3. Add it to your `.env.local` file:
+3. Add it to `.env.local`:
 
 ```bash
 # .env.local
@@ -28,14 +28,7 @@ RESEND_API_KEY=re_your_api_key_here
 RESEND_FROM_EMAIL="Your App <noreply@yourdomain.com>"
 ```
 
-### Domain Verification
-
-To send from your own domain (not `onboarding@resend.dev`), you need to verify it:
-
-1. In Resend dashboard, go to **Domains** > **Add Domain**
-2. Enter your domain (e.g., `yourdomain.com`)
-3. Add the DNS records Resend gives you (MX, TXT, DKIM records) to your domain's DNS settings
-4. Wait for verification (usually takes a few minutes)
+To send from your own domain, verify it in Resend's dashboard under **Domains**. See `references/resend-setup.md` for full DNS setup instructions.
 
 ### Create the Email Client
 
@@ -83,23 +76,13 @@ export async function sendEmail({
 
 ## React Email Templates
 
-React Email lets you write emails like React components. Each template is a function that takes props (variables) and returns the email HTML.
-
-### Welcome Email
+React Email lets you write emails like React components. Here is a Welcome email example. See `references/email-templates.md` for 8 complete templates (Welcome, Verify, Password Reset, Order Confirmation, Subscription Changed, Weekly Digest, Alert, Invoice).
 
 ```tsx
 // emails/welcome.tsx
 import {
-  Html,
-  Head,
-  Body,
-  Container,
-  Section,
-  Text,
-  Button,
-  Heading,
-  Hr,
-  Preview,
+  Html, Head, Body, Container, Section,
+  Text, Button, Heading, Hr, Preview,
 } from "@react-email/components";
 
 interface WelcomeEmailProps {
@@ -112,185 +95,26 @@ export default function WelcomeEmail({ userName, dashboardUrl }: WelcomeEmailPro
     <Html>
       <Head />
       <Preview>Welcome to our platform, {userName}!</Preview>
-      <Body style={main}>
-        <Container style={container}>
-          <Heading style={heading}>Welcome, {userName}!</Heading>
-          <Text style={text}>
+      <Body style={{ backgroundColor: "#f6f9fc", fontFamily: "Arial, sans-serif" }}>
+        <Container style={{ margin: "0 auto", padding: "40px 20px", maxWidth: "560px" }}>
+          <Heading style={{ fontSize: "24px", color: "#1a1a1a" }}>Welcome, {userName}!</Heading>
+          <Text style={{ fontSize: "16px", color: "#4a4a4a", lineHeight: "26px" }}>
             Thanks for signing up. Your account is ready to go.
           </Text>
-          <Section style={buttonContainer}>
-            <Button style={button} href={dashboardUrl}>
+          <Section style={{ textAlign: "center" as const, margin: "24px 0" }}>
+            <Button href={dashboardUrl} style={{ backgroundColor: "#2563eb", borderRadius: "6px", color: "#fff", fontSize: "16px", padding: "12px 24px", textDecoration: "none" }}>
               Go to Dashboard
             </Button>
           </Section>
-          <Hr style={hr} />
-          <Text style={footer}>
-            You received this because you signed up at our platform.
-            If this was not you, please ignore this email.
+          <Hr style={{ borderColor: "#e5e7eb", margin: "24px 0" }} />
+          <Text style={{ fontSize: "12px", color: "#9ca3af" }}>
+            You received this because you signed up. If this was not you, ignore this email.
           </Text>
         </Container>
       </Body>
     </Html>
   );
 }
-
-const main = { backgroundColor: "#f6f9fc", fontFamily: "Arial, sans-serif" };
-const container = { margin: "0 auto", padding: "40px 20px", maxWidth: "560px" };
-const heading = { fontSize: "24px", color: "#1a1a1a", marginBottom: "16px" };
-const text = { fontSize: "16px", color: "#4a4a4a", lineHeight: "26px" };
-const buttonContainer = { textAlign: "center" as const, margin: "24px 0" };
-const button = {
-  backgroundColor: "#2563eb",
-  borderRadius: "6px",
-  color: "#fff",
-  fontSize: "16px",
-  padding: "12px 24px",
-  textDecoration: "none",
-};
-const hr = { borderColor: "#e5e7eb", margin: "24px 0" };
-const footer = { fontSize: "12px", color: "#9ca3af" };
-```
-
-### Email Verification
-
-```tsx
-// emails/verify-email.tsx
-import {
-  Html,
-  Head,
-  Body,
-  Container,
-  Section,
-  Text,
-  Button,
-  Heading,
-  Hr,
-  Preview,
-} from "@react-email/components";
-
-interface VerifyEmailProps {
-  verificationUrl: string;
-  expiresInHours: number;
-}
-
-export default function VerifyEmail({ verificationUrl, expiresInHours }: VerifyEmailProps) {
-  return (
-    <Html>
-      <Head />
-      <Preview>Verify your email address</Preview>
-      <Body style={main}>
-        <Container style={container}>
-          <Heading style={heading}>Verify Your Email</Heading>
-          <Text style={text}>
-            Click the button below to verify your email address. This link expires
-            in {expiresInHours} hours.
-          </Text>
-          <Section style={buttonContainer}>
-            <Button style={button} href={verificationUrl}>
-              Verify Email
-            </Button>
-          </Section>
-          <Text style={smallText}>
-            If the button does not work, copy and paste this URL into your browser:
-          </Text>
-          <Text style={urlText}>{verificationUrl}</Text>
-          <Hr style={hr} />
-          <Text style={footer}>
-            If you did not create an account, you can safely ignore this email.
-          </Text>
-        </Container>
-      </Body>
-    </Html>
-  );
-}
-
-const main = { backgroundColor: "#f6f9fc", fontFamily: "Arial, sans-serif" };
-const container = { margin: "0 auto", padding: "40px 20px", maxWidth: "560px" };
-const heading = { fontSize: "24px", color: "#1a1a1a", marginBottom: "16px" };
-const text = { fontSize: "16px", color: "#4a4a4a", lineHeight: "26px" };
-const buttonContainer = { textAlign: "center" as const, margin: "24px 0" };
-const button = {
-  backgroundColor: "#2563eb",
-  borderRadius: "6px",
-  color: "#fff",
-  fontSize: "16px",
-  padding: "12px 24px",
-  textDecoration: "none",
-};
-const smallText = { fontSize: "14px", color: "#6b7280" };
-const urlText = { fontSize: "12px", color: "#2563eb", wordBreak: "break-all" as const };
-const hr = { borderColor: "#e5e7eb", margin: "24px 0" };
-const footer = { fontSize: "12px", color: "#9ca3af" };
-```
-
-### Password Reset
-
-```tsx
-// emails/password-reset.tsx
-import {
-  Html,
-  Head,
-  Body,
-  Container,
-  Section,
-  Text,
-  Button,
-  Heading,
-  Hr,
-  Preview,
-} from "@react-email/components";
-
-interface PasswordResetProps {
-  resetUrl: string;
-  userName: string;
-}
-
-export default function PasswordReset({ resetUrl, userName }: PasswordResetProps) {
-  return (
-    <Html>
-      <Head />
-      <Preview>Reset your password</Preview>
-      <Body style={main}>
-        <Container style={container}>
-          <Heading style={heading}>Password Reset</Heading>
-          <Text style={text}>Hi {userName},</Text>
-          <Text style={text}>
-            Someone requested a password reset for your account. If this was you,
-            click the button below. If not, you can safely ignore this email.
-          </Text>
-          <Section style={buttonContainer}>
-            <Button style={button} href={resetUrl}>
-              Reset Password
-            </Button>
-          </Section>
-          <Text style={smallText}>This link expires in 1 hour.</Text>
-          <Hr style={hr} />
-          <Text style={footer}>
-            If you did not request a password reset, no action is needed.
-            Your password will remain unchanged.
-          </Text>
-        </Container>
-      </Body>
-    </Html>
-  );
-}
-
-const main = { backgroundColor: "#f6f9fc", fontFamily: "Arial, sans-serif" };
-const container = { margin: "0 auto", padding: "40px 20px", maxWidth: "560px" };
-const heading = { fontSize: "24px", color: "#1a1a1a", marginBottom: "16px" };
-const text = { fontSize: "16px", color: "#4a4a4a", lineHeight: "26px" };
-const buttonContainer = { textAlign: "center" as const, margin: "24px 0" };
-const button = {
-  backgroundColor: "#dc2626",
-  borderRadius: "6px",
-  color: "#fff",
-  fontSize: "16px",
-  padding: "12px 24px",
-  textDecoration: "none",
-};
-const smallText = { fontSize: "14px", color: "#6b7280" };
-const hr = { borderColor: "#e5e7eb", margin: "24px 0" };
-const footer = { fontSize: "12px", color: "#9ca3af" };
 ```
 
 ## Transactional Email Flows

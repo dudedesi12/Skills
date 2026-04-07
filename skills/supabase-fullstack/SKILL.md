@@ -5,13 +5,13 @@ description: "Use this skill whenever the user mentions database, auth, users, l
 
 # Supabase Fullstack
 
-Supabase is your backend — it gives you a database (PostgreSQL), authentication, file storage, and real-time subscriptions. Think of it as "Firebase but with a real database."
+Supabase is your backend — database (PostgreSQL), authentication, file storage, and real-time subscriptions.
 
 ## Supabase Client Setup
 
-You need **three different clients** depending on where your code runs.
+You need three clients for different contexts.
 
-### 1. Server Component Client (for pages and layouts)
+### Server Component Client
 
 ```ts
 // lib/supabase/server.ts
@@ -20,23 +20,16 @@ import { cookies } from "next/headers";
 
 export async function createClient() {
   const cookieStore = await cookies();
-
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
+        getAll() { return cookieStore.getAll(); },
         setAll(cookiesToSet) {
           try {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
-            );
-          } catch {
-            // Server Components have read-only cookies — this is expected
-          }
+            cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options));
+          } catch { /* Read-only in Server Components */ }
         },
       },
     }
@@ -44,7 +37,7 @@ export async function createClient() {
 }
 ```
 
-### 2. Browser Client (for Client Components)
+### Browser Client
 
 ```ts
 // lib/supabase/client.ts
@@ -58,59 +51,11 @@ export function createClient() {
 }
 ```
 
-### 3. Middleware Client (for auth session refresh)
+### Middleware Client
 
-```ts
-// lib/supabase/middleware.ts
-import { createServerClient } from "@supabase/ssr";
-import { NextResponse, type NextRequest } from "next/server";
+See `references/auth-patterns.md` for the full middleware setup with session refresh.
 
-export async function updateSession(request: NextRequest) {
-  let response = NextResponse.next({ request });
-
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) =>
-            request.cookies.set(name, value)
-          );
-          response = NextResponse.next({ request });
-          cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options)
-          );
-        },
-      },
-    }
-  );
-
-  await supabase.auth.getUser();
-  return response;
-}
-```
-
-```ts
-// middleware.ts
-import { updateSession } from "@/lib/supabase/middleware";
-import type { NextRequest } from "next/server";
-
-export async function middleware(request: NextRequest) {
-  return await updateSession(request);
-}
-
-export const config = {
-  matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
-  ],
-};
-```
-
-## Authentication Flows
+## Auth Flows
 
 ### Email/Password Sign Up
 
@@ -122,28 +67,14 @@ import { redirect } from "next/navigation";
 export default function SignupPage() {
   async function signup(formData: FormData) {
     "use server";
-
     const email = formData.get("email") as string;
     const password = formData.get("password") as string;
-
-    if (!email || !password) {
-      throw new Error("Email and password are required");
-    }
-
-    if (password.length < 8) {
-      throw new Error("Password must be at least 8 characters");
-    }
+    if (!email || !password) throw new Error("Email and password required");
+    if (password.length < 8) throw new Error("Password must be 8+ characters");
 
     const supabase = await createClient();
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-    });
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
+    const { error } = await supabase.auth.signUp({ email, password });
+    if (error) throw new Error(error.message);
     redirect("/check-email");
   }
 
@@ -151,7 +82,7 @@ export default function SignupPage() {
     <form action={signup} className="mx-auto max-w-sm space-y-4 p-8">
       <h1 className="text-2xl font-bold">Sign Up</h1>
       <input name="email" type="email" required placeholder="Email" className="w-full rounded border p-3" />
-      <input name="password" type="password" required minLength={8} placeholder="Password (8+ characters)" className="w-full rounded border p-3" />
+      <input name="password" type="password" required minLength={8} placeholder="Password" className="w-full rounded border p-3" />
       <button type="submit" className="w-full rounded bg-blue-500 py-3 text-white">Create Account</button>
     </form>
   );
@@ -168,21 +99,13 @@ import { redirect } from "next/navigation";
 export default function LoginPage() {
   async function login(formData: FormData) {
     "use server";
-
     const email = formData.get("email") as string;
     const password = formData.get("password") as string;
-
-    if (!email || !password) {
-      throw new Error("Email and password are required");
-    }
+    if (!email || !password) throw new Error("Email and password required");
 
     const supabase = await createClient();
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-
-    if (error) {
-      throw new Error("Invalid email or password");
-    }
-
+    if (error) throw new Error("Invalid email or password");
     redirect("/dashboard");
   }
 
@@ -197,36 +120,28 @@ export default function LoginPage() {
 }
 ```
 
-### OAuth (Google Login)
+### OAuth (Google)
 
 ```tsx
-// app/login/oauth-button.tsx
+// app/login/google-button.tsx
 "use client";
-
 import { createClient } from "@/lib/supabase/client";
 
 export function GoogleLoginButton() {
-  async function handleGoogleLogin() {
+  async function handleClick() {
     const supabase = createClient();
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
-      },
+      options: { redirectTo: `${window.location.origin}/auth/callback` },
     });
-
-    if (error) {
-      alert("Failed to start Google login");
-    }
+    if (error) alert("Failed to start Google login");
   }
 
-  return (
-    <button onClick={handleGoogleLogin} className="w-full rounded border px-4 py-3 hover:bg-gray-50">
-      Continue with Google
-    </button>
-  );
+  return <button onClick={handleClick} className="w-full rounded border px-4 py-3">Continue with Google</button>;
 }
 ```
+
+### Auth Callback Route
 
 ```ts
 // app/auth/callback/route.ts
@@ -236,61 +151,12 @@ import { NextResponse } from "next/server";
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const next = searchParams.get("next") ?? "/dashboard";
-
   if (code) {
     const supabase = await createClient();
     const { error } = await supabase.auth.exchangeCodeForSession(code);
-
-    if (!error) {
-      return NextResponse.redirect(`${origin}${next}`);
-    }
+    if (!error) return NextResponse.redirect(`${origin}/dashboard`);
   }
-
   return NextResponse.redirect(`${origin}/login?error=auth_failed`);
-}
-```
-
-### Magic Link (Passwordless)
-
-```tsx
-// app/login/magic-link-form.tsx
-"use client";
-
-import { useState } from "react";
-import { createClient } from "@/lib/supabase/client";
-
-export function MagicLinkForm() {
-  const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
-  const [error, setError] = useState("");
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
-    });
-
-    if (error) {
-      setError(error.message);
-    } else {
-      setSent(true);
-    }
-  }
-
-  if (sent) return <p className="text-green-600">Check your email for a login link.</p>;
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="Email" className="w-full rounded border p-3" />
-      {error && <p className="text-sm text-red-500">{error}</p>}
-      <button type="submit" className="w-full rounded bg-blue-500 py-3 text-white">Send Magic Link</button>
-    </form>
-  );
 }
 ```
 
@@ -299,7 +165,6 @@ export function MagicLinkForm() {
 ```ts
 // app/actions/auth.ts
 "use server";
-
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 
@@ -310,62 +175,37 @@ export async function logout() {
 }
 ```
 
-### Get Current User
-
-```tsx
-// In Server Components
-import { createClient } from "@/lib/supabase/server";
-
-export default async function ProfilePage() {
-  const supabase = await createClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
-
-  if (!user) {
-    redirect("/login");
-  }
-
-  return <p>Logged in as {user.email}</p>;
-}
-```
+See `references/auth-patterns.md` for magic link, password reset, and protected route patterns.
 
 ## Row Level Security (RLS)
 
-RLS is how you protect your data. Every table should have RLS enabled. Without policies, NO ONE can access the data (not even authenticated users).
-
-### Enable RLS and Create Policies
+Every table must have RLS enabled. Without policies, no one can access the data.
 
 ```sql
--- Always enable RLS on every table
 ALTER TABLE posts ENABLE ROW LEVEL SECURITY;
 
--- Users can read all published posts
 CREATE POLICY "Anyone can read published posts"
-ON posts FOR SELECT
-USING (published = true);
+ON posts FOR SELECT USING (published = true);
 
--- Users can only insert their own posts
 CREATE POLICY "Users can create own posts"
-ON posts FOR INSERT
-WITH CHECK (auth.uid() = author_id);
+ON posts FOR INSERT WITH CHECK (auth.uid() = author_id);
 
--- Users can only update their own posts
 CREATE POLICY "Users can update own posts"
 ON posts FOR UPDATE
 USING (auth.uid() = author_id)
 WITH CHECK (auth.uid() = author_id);
 
--- Users can only delete their own posts
 CREATE POLICY "Users can delete own posts"
-ON posts FOR DELETE
-USING (auth.uid() = author_id);
+ON posts FOR DELETE USING (auth.uid() = author_id);
 ```
+
+See `references/rls-policies.md` for 15+ patterns (team-based, role-based, admin override, time-based, etc).
 
 ## Database Schema Design
 
 ### Users and Profiles
 
 ```sql
--- Profiles table (extends auth.users with app-specific data)
 CREATE TABLE profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   full_name TEXT NOT NULL DEFAULT '',
@@ -377,35 +217,26 @@ CREATE TABLE profiles (
 );
 
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Anyone can view profiles" ON profiles FOR SELECT USING (true);
+CREATE POLICY "Users can update own profile" ON profiles FOR UPDATE USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
 
-CREATE POLICY "Anyone can view profiles"
-ON profiles FOR SELECT USING (true);
-
-CREATE POLICY "Users can update own profile"
-ON profiles FOR UPDATE
-USING (auth.uid() = id)
-WITH CHECK (auth.uid() = id);
-
--- Auto-create profile when a new user signs up
+-- Auto-create profile on signup
 CREATE OR REPLACE FUNCTION handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
   INSERT INTO profiles (id, full_name, avatar_url)
-  VALUES (
-    NEW.id,
-    COALESCE(NEW.raw_user_meta_data->>'full_name', ''),
-    COALESCE(NEW.raw_user_meta_data->>'avatar_url', '')
-  );
+  VALUES (NEW.id, COALESCE(NEW.raw_user_meta_data->>'full_name', ''), COALESCE(NEW.raw_user_meta_data->>'avatar_url', ''));
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 CREATE TRIGGER on_auth_user_created
-AFTER INSERT ON auth.users
-FOR EACH ROW EXECUTE FUNCTION handle_new_user();
+AFTER INSERT ON auth.users FOR EACH ROW EXECUTE FUNCTION handle_new_user();
 ```
 
-### Posts with Full-Text Search
+See `references/schema-templates.md` for teams, subscriptions, comments, notifications, and more.
+
+## Full-Text Search
 
 ```sql
 CREATE TABLE posts (
@@ -416,9 +247,6 @@ CREATE TABLE posts (
   published BOOLEAN DEFAULT false,
   author_id UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-
-  -- Full-text search column
   fts TSVECTOR GENERATED ALWAYS AS (
     setweight(to_tsvector('english', COALESCE(title, '')), 'A') ||
     setweight(to_tsvector('english', COALESCE(body, '')), 'B')
@@ -426,115 +254,51 @@ CREATE TABLE posts (
 );
 
 CREATE INDEX posts_fts_idx ON posts USING GIN (fts);
-CREATE INDEX posts_author_id_idx ON posts(author_id);
-CREATE INDEX posts_slug_idx ON posts(slug);
-CREATE INDEX posts_created_at_idx ON posts(created_at DESC);
 ```
 
-Search query:
+Query: `await supabase.from("posts").select("*").textSearch("fts", query, { type: "websearch" })`
 
-```tsx
-// app/search/page.tsx
-const { data, error } = await supabase
-  .from("posts")
-  .select("id, title, slug")
-  .textSearch("fts", query, { type: "websearch" })
-  .eq("published", true)
-  .limit(20);
-```
-
-## Supabase Realtime
+## Realtime Subscriptions
 
 ```tsx
 // app/components/live-notifications.tsx
 "use client";
-
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
-interface Notification {
-  id: string;
-  message: string;
-  created_at: string;
-}
-
 export function LiveNotifications({ userId }: { userId: string }) {
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [items, setItems] = useState<{ id: string; message: string }[]>([]);
 
   useEffect(() => {
     const supabase = createClient();
-
     const channel = supabase
       .channel("notifications")
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "notifications",
-          filter: `user_id=eq.${userId}`,
-        },
-        (payload) => {
-          setNotifications((prev) => [payload.new as Notification, ...prev]);
-        }
-      )
+      .on("postgres_changes", {
+        event: "INSERT", schema: "public", table: "notifications",
+        filter: `user_id=eq.${userId}`,
+      }, (payload) => {
+        setItems((prev) => [payload.new as any, ...prev]);
+      })
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, [userId]);
 
   return (
     <div className="space-y-2">
-      {notifications.map((n) => (
-        <div key={n.id} className="rounded bg-blue-50 p-3 text-sm">
-          {n.message}
-        </div>
-      ))}
+      {items.map((n) => <div key={n.id} className="rounded bg-blue-50 p-3 text-sm">{n.message}</div>)}
     </div>
   );
 }
 ```
 
+See `references/realtime.md` for broadcast, presence, and chat examples.
+
 ## Storage (File Uploads)
-
-### Create Bucket and Policies
-
-```sql
--- Create a storage bucket
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('avatars', 'avatars', true);
-
--- Allow authenticated users to upload their own avatar
-CREATE POLICY "Users can upload own avatar"
-ON storage.objects FOR INSERT
-WITH CHECK (
-  bucket_id = 'avatars' AND
-  auth.uid()::text = (storage.foldername(name))[1]
-);
-
--- Allow anyone to view avatars
-CREATE POLICY "Anyone can view avatars"
-ON storage.objects FOR SELECT
-USING (bucket_id = 'avatars');
-
--- Allow users to update/delete their own avatar
-CREATE POLICY "Users can update own avatar"
-ON storage.objects FOR UPDATE
-USING (bucket_id = 'avatars' AND auth.uid()::text = (storage.foldername(name))[1]);
-
-CREATE POLICY "Users can delete own avatar"
-ON storage.objects FOR DELETE
-USING (bucket_id = 'avatars' AND auth.uid()::text = (storage.foldername(name))[1]);
-```
-
-### Upload File from Client
 
 ```tsx
 // app/components/avatar-upload.tsx
 "use client";
-
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
@@ -544,39 +308,24 @@ export function AvatarUpload({ userId }: { userId: string }) {
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    if (file.size > 2 * 1024 * 1024) {
-      alert("File must be under 2MB");
-      return;
-    }
-
-    if (!file.type.startsWith("image/")) {
-      alert("File must be an image");
-      return;
-    }
+    if (file.size > 2 * 1024 * 1024) { alert("File must be under 2MB"); return; }
+    if (!file.type.startsWith("image/")) { alert("Must be an image"); return; }
 
     setUploading(true);
     const supabase = createClient();
     const filePath = `${userId}/avatar.${file.name.split(".").pop()}`;
+    const { error } = await supabase.storage.from("avatars").upload(filePath, file, { upsert: true });
 
-    const { error } = await supabase.storage
-      .from("avatars")
-      .upload(filePath, file, { upsert: true });
-
-    if (error) {
-      alert("Upload failed: " + error.message);
-    } else {
+    if (error) { alert("Upload failed"); }
+    else {
       const { data } = supabase.storage.from("avatars").getPublicUrl(filePath);
-      // Update profile with new avatar URL
       await supabase.from("profiles").update({ avatar_url: data.publicUrl }).eq("id", userId);
-      window.location.reload();
     }
-
     setUploading(false);
   }
 
   return (
-    <label className="cursor-pointer rounded bg-gray-100 px-4 py-2 hover:bg-gray-200">
+    <label className="cursor-pointer rounded bg-gray-100 px-4 py-2">
       {uploading ? "Uploading..." : "Change Avatar"}
       <input type="file" accept="image/*" onChange={handleUpload} className="hidden" disabled={uploading} />
     </label>
@@ -584,111 +333,33 @@ export function AvatarUpload({ userId }: { userId: string }) {
 }
 ```
 
-## Edge Functions (Deno)
-
-Edge Functions run server-side code close to your users. Use for webhooks, scheduled tasks, or custom logic.
-
-```ts
-// supabase/functions/send-welcome-email/index.ts
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-serve(async (req) => {
-  try {
-    const { user_id } = await req.json();
-
-    if (!user_id) {
-      return new Response(JSON.stringify({ error: "user_id required" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
-
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("full_name")
-      .eq("id", user_id)
-      .single();
-
-    // Send email via your email provider here
-
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { "Content-Type": "application/json" },
-    });
-  } catch (err) {
-    return new Response(JSON.stringify({ error: "Internal error" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-});
-```
-
-Invoke from Next.js:
-
-```ts
-const { data, error } = await supabase.functions.invoke("send-welcome-email", {
-  body: { user_id: user.id },
-});
-```
-
-## Migrations
-
-```bash
-# Create a new migration
-npx supabase migration new create_posts_table
-
-# This creates: supabase/migrations/20240101000000_create_posts_table.sql
-# Write your SQL in that file, then apply:
-
-npx supabase db push          # Push to remote
-npx supabase db reset         # Reset local DB and re-run all migrations
-```
-
-## Supabase CLI Commands
-
-```bash
-npx supabase init                          # Initialize Supabase in project
-npx supabase start                         # Start local Supabase
-npx supabase stop                          # Stop local Supabase
-npx supabase db push                       # Push migrations to remote
-npx supabase db pull                       # Pull remote schema as migration
-npx supabase db reset                      # Reset local DB
-npx supabase gen types typescript --local  # Generate TypeScript types from local DB
-npx supabase gen types typescript --project-id YOUR_ID > lib/database.types.ts
-npx supabase functions serve               # Run edge functions locally
-npx supabase functions deploy my-function  # Deploy edge function
-npx supabase migration new my_migration    # Create new migration file
-```
-
 ## Database Functions and Triggers
 
 ```sql
--- Auto-update updated_at column
+-- Auto-update updated_at
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END;
+BEGIN NEW.updated_at = now(); RETURN NEW; END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER set_updated_at
-BEFORE UPDATE ON posts
+CREATE TRIGGER set_updated_at BEFORE UPDATE ON posts
 FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+```
 
--- Increment a counter safely
-CREATE OR REPLACE FUNCTION increment_likes(post_id UUID)
-RETURNS VOID AS $$
-BEGIN
-  UPDATE posts SET like_count = like_count + 1 WHERE id = post_id;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+## Edge Functions
+
+See `references/edge-functions.md` for Deno edge function patterns and invocation from Next.js.
+
+## Migrations and CLI
+
+```bash
+npx supabase init                          # Initialize
+npx supabase start                         # Start local
+npx supabase migration new my_migration    # Create migration
+npx supabase db push                       # Push to remote
+npx supabase db pull                       # Pull remote schema
+npx supabase gen types typescript --local > lib/database.types.ts
+npx supabase functions deploy my-function  # Deploy edge function
 ```
 
 ## Environment Variables
@@ -696,8 +367,6 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 ```bash
 # .env.local
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...your-anon-key
-SUPABASE_SERVICE_ROLE_KEY=eyJ...your-service-role-key  # NEVER expose to browser
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...       # Safe for browser (RLS protects data)
+SUPABASE_SERVICE_ROLE_KEY=eyJ...           # Bypasses RLS — NEVER expose to browser
 ```
-
-**Important:** The anon key is safe to expose (it is rate-limited and RLS protects data). The service role key bypasses RLS — NEVER use it in client-side code.
