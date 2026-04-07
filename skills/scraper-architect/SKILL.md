@@ -65,49 +65,7 @@ export async function scrapePage(url: string): Promise<string> {
 }
 ```
 
-### Extracting Structured Data from a Page
-
-```typescript
-// lib/scraper/extract.ts
-import { chromium } from "playwright";
-
-interface ProductData {
-  name: string;
-  price: string;
-  description: string;
-  imageUrl: string;
-}
-
-export async function scrapeProductPage(url: string): Promise<ProductData> {
-  const browser = await chromium.launch({ headless: true });
-
-  try {
-    const page = await browser.newPage();
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-
-    const data = await page.evaluate(() => {
-      const getText = (selector: string): string =>
-        document.querySelector(selector)?.textContent?.trim() || "";
-      const getAttr = (selector: string, attr: string): string =>
-        document.querySelector(selector)?.getAttribute(attr) || "";
-
-      return {
-        name: getText("h1"),
-        price: getText("[data-price], .price, .product-price"),
-        description: getText("[data-description], .description, .product-description"),
-        imageUrl: getAttr("img.product-image, .product img", "src"),
-      };
-    });
-
-    return data;
-  } catch (err) {
-    console.error(`Product scrape failed:`, err);
-    throw err;
-  } finally {
-    await browser.close();
-  }
-}
-```
+For extracting structured data, use `page.evaluate()` with CSS selectors, or feed the HTML to Gemini for intelligent extraction (see Gemini-Powered Extraction below). See `references/scraper-patterns.md` for pagination, infinite scroll, form submission, and file download patterns.
 
 ## Anti-Detection Techniques
 
@@ -156,30 +114,21 @@ export async function createStealthBrowser() {
     viewport: { width: 1920, height: 1080 },
     locale: "en-AU",
     timezoneId: "Australia/Sydney",
-    geolocation: { latitude: -33.8688, longitude: 151.2093 },
-    permissions: ["geolocation"],
   });
-
   // Remove the "webdriver" flag that identifies automated browsers
   await context.addInitScript(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => false });
   });
-
   return { browser, context };
 }
 ```
 
 ## Data Normalization and Cleaning
 
-Raw scraped data is messy. Clean it before storing:
-
 ```typescript
 // lib/scraper/normalize.ts
 export function cleanText(raw: string): string {
-  return raw
-    .replace(/\s+/g, " ")
-    .replace(/[\n\r\t]/g, " ")
-    .trim();
+  return raw.replace(/\s+/g, " ").replace(/[\n\r\t]/g, " ").trim();
 }
 
 export function extractPrice(raw: string): number | null {
@@ -188,35 +137,8 @@ export function extractPrice(raw: string): number | null {
   return parseFloat(match[0].replace(/,/g, ""));
 }
 
-export function extractDate(raw: string): string | null {
-  const patterns = [
-    /(\d{1,2})\/(\d{1,2})\/(\d{4})/,
-    /(\d{4})-(\d{2})-(\d{2})/,
-    /(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{4})/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = raw.match(pattern);
-    if (match) {
-      try {
-        const date = new Date(match[0]);
-        if (!isNaN(date.getTime())) {
-          return date.toISOString().split("T")[0];
-        }
-      } catch {
-        continue;
-      }
-    }
-  }
-  return null;
-}
-
 export function normalizeUrl(url: string, baseUrl: string): string {
-  try {
-    return new URL(url, baseUrl).href;
-  } catch {
-    return url;
-  }
+  try { return new URL(url, baseUrl).href; } catch { return url; }
 }
 ```
 
@@ -250,10 +172,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const { data: sources, error } = await supabase
-      .from("scrape_sources")
-      .select("*")
-      .eq("active", true);
-
+      .from("scrape_sources").select("*").eq("active", true);
     if (error) throw new Error(`DB error: ${error.message}`);
 
     for (const source of sources || []) {
@@ -261,49 +180,31 @@ export async function GET(request: NextRequest) {
         const html = await scrapePage(source.url);
         const contentHash = await hashContent(html);
 
+        // Skip if content unchanged
         if (contentHash === source.last_content_hash) {
           results.unchanged++;
-          await supabase
-            .from("scrape_sources")
-            .update({ last_checked_at: new Date().toISOString() })
-            .eq("id", source.id);
+          await supabase.from("scrape_sources")
+            .update({ last_checked_at: new Date().toISOString() }).eq("id", source.id);
           continue;
         }
 
         const extracted = await extractWithGemini(html, source.extraction_prompt);
-
-        const { error: insertError } = await supabase.from("scraped_data").insert({
-          source_id: source.id,
-          data: extracted,
-          content_hash: contentHash,
-          scraped_at: new Date().toISOString(),
+        await supabase.from("scraped_data").insert({
+          source_id: source.id, data: extracted,
+          content_hash: contentHash, scraped_at: new Date().toISOString(),
         });
-
-        if (insertError) throw new Error(`Insert error: ${insertError.message}`);
-
-        await supabase
-          .from("scrape_sources")
-          .update({
-            last_content_hash: contentHash,
-            last_scraped_at: new Date().toISOString(),
-            last_checked_at: new Date().toISOString(),
-            consecutive_failures: 0,
-          })
-          .eq("id", source.id);
-
+        await supabase.from("scrape_sources").update({
+          last_content_hash: contentHash, last_scraped_at: new Date().toISOString(),
+          last_checked_at: new Date().toISOString(), consecutive_failures: 0,
+        }).eq("id", source.id);
         results.scraped++;
       } catch (err) {
         results.failed++;
-        console.error(`Failed to scrape ${source.url}:`, err);
-
-        await supabase
-          .from("scrape_sources")
-          .update({
-            consecutive_failures: (source.consecutive_failures || 0) + 1,
-            last_error: err instanceof Error ? err.message : String(err),
-            last_checked_at: new Date().toISOString(),
-          })
-          .eq("id", source.id);
+        await supabase.from("scrape_sources").update({
+          consecutive_failures: (source.consecutive_failures || 0) + 1,
+          last_error: err instanceof Error ? err.message : String(err),
+          last_checked_at: new Date().toISOString(),
+        }).eq("id", source.id);
       }
     }
 
@@ -430,17 +331,11 @@ export async function checkRobotsTxt(
 }
 ```
 
-**Ethical scraping rules:**
-1. Always check `robots.txt` first
-2. Respect `Crawl-Delay` headers
-3. Do not scrape faster than one page per second
-4. Identify yourself with a proper User-Agent when required
-5. Cache pages and avoid re-scraping unchanged content
-6. Stop immediately if the site blocks you
+**Ethical scraping rules:** Always check `robots.txt` first. Respect `Crawl-Delay`. Never scrape faster than one page per second. Cache pages to avoid re-fetching unchanged content. Stop if the site blocks you.
 
 ## Gemini-Powered Extraction
 
-Instead of writing fragile CSS selectors, feed the HTML to Gemini and let it extract structured data:
+Instead of writing fragile CSS selectors, feed the HTML to Gemini and get structured data back. See `references/gemini-extraction.md` for prompt templates and validation patterns.
 
 ```typescript
 // lib/scraper/gemini-extract.ts
@@ -494,7 +389,7 @@ ${cleanHtml}`;
 
 ## Multi-Agent Scraping Architecture
 
-For complex scraping pipelines, use a 5-agent pattern where each agent has one job:
+For complex scraping pipelines, split responsibilities across 5 agents: **Coordinator** (manages queue), **Fetcher** (downloads pages with anti-detection), **Parser** (extracts data via Gemini), **Validator** (checks data quality), **Storer** (saves to Supabase with deduplication).
 
 ```typescript
 // lib/scraper/agents/coordinator.ts
@@ -514,169 +409,23 @@ export async function coordinatorAgent(jobs: ScrapeJob[]) {
 
   for (const job of jobs) {
     try {
-      const html = await fetchAgent(job.url);
-      const extracted = await parseAgent(html, job.extractionPrompt);
-
-      const validation = await validateAgent(extracted);
-      if (!validation.valid) {
-        console.warn(`Validation failed for ${job.url}:`, validation.errors);
-        results.skipped++;
-        continue;
-      }
-
-      await storeAgent(job.sourceId, extracted);
+      // Each agent has a single responsibility
+      const html = await fetchAgent(job.url);         // 1. Fetch with anti-detection
+      const extracted = await parseAgent(html, job.extractionPrompt); // 2. Parse via Gemini
+      const validation = await validateAgent(extracted);              // 3. Validate shape
+      if (!validation.valid) { results.skipped++; continue; }
+      await storeAgent(job.sourceId, extracted);      // 4. Store with dedup
       results.success++;
     } catch (err) {
       console.error(`Job failed for ${job.url}:`, err);
       results.failed++;
     }
   }
-
   return results;
 }
 ```
 
-```typescript
-// lib/scraper/agents/fetcher.ts
-import { chromium } from "playwright";
-import { getRandomUserAgent } from "../user-agents";
-import { randomDelay } from "../delays";
-import { checkRobotsTxt } from "../robots";
-
-export async function fetchAgent(url: string): Promise<string> {
-  const { allowed, crawlDelay } = await checkRobotsTxt(url);
-  if (!allowed) {
-    throw new Error(`Scraping not allowed by robots.txt: ${url}`);
-  }
-
-  await randomDelay(crawlDelay * 1000, crawlDelay * 2000);
-
-  const browser = await chromium.launch({ headless: true });
-  try {
-    const context = await browser.newContext({
-      userAgent: getRandomUserAgent(),
-      viewport: { width: 1920, height: 1080 },
-    });
-
-    const page = await context.newPage();
-    await page.route("**/*.{png,jpg,jpeg,gif,svg,woff,woff2}", (route) => route.abort());
-
-    const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-
-    if (!response || response.status() >= 400) {
-      throw new Error(`HTTP ${response?.status()} for ${url}`);
-    }
-
-    return await page.content();
-  } finally {
-    await browser.close();
-  }
-}
-```
-
-```typescript
-// lib/scraper/agents/parser.ts
-import { extractWithGemini } from "../gemini-extract";
-
-export async function parseAgent(
-  html: string,
-  extractionPrompt: string
-): Promise<Record<string, unknown>> {
-  return await extractWithGemini(html, extractionPrompt);
-}
-```
-
-```typescript
-// lib/scraper/agents/validator.ts
-interface ValidationResult {
-  valid: boolean;
-  errors: string[];
-}
-
-export async function validateAgent(
-  data: Record<string, unknown>
-): Promise<ValidationResult> {
-  const errors: string[] = [];
-
-  if (!data || typeof data !== "object") {
-    errors.push("Extracted data is not an object");
-    return { valid: false, errors };
-  }
-
-  if (Object.keys(data).length === 0) {
-    errors.push("Extracted data is empty");
-    return { valid: false, errors };
-  }
-
-  for (const [key, value] of Object.entries(data)) {
-    if (typeof value === "string" && value.length === 0) {
-      errors.push(`Field "${key}" is empty`);
-    }
-  }
-
-  return { valid: errors.length === 0, errors };
-}
-```
-
-```typescript
-// lib/scraper/agents/storer.ts
-import { createClient } from "@supabase/supabase-js";
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
-
-export async function storeAgent(
-  sourceId: string,
-  data: Record<string, unknown>
-): Promise<void> {
-  const contentHash = await hashData(data);
-
-  const { data: existing } = await supabase
-    .from("scraped_data")
-    .select("id")
-    .eq("source_id", sourceId)
-    .eq("content_hash", contentHash)
-    .limit(1);
-
-  if (existing && existing.length > 0) {
-    await supabase
-      .from("scrape_sources")
-      .update({ last_checked_at: new Date().toISOString() })
-      .eq("id", sourceId);
-    return;
-  }
-
-  const { error } = await supabase.from("scraped_data").insert({
-    source_id: sourceId,
-    data,
-    content_hash: contentHash,
-    scraped_at: new Date().toISOString(),
-  });
-
-  if (error) throw new Error(`Store failed: ${error.message}`);
-
-  await supabase
-    .from("scrape_sources")
-    .update({
-      last_scraped_at: new Date().toISOString(),
-      last_checked_at: new Date().toISOString(),
-      last_content_hash: contentHash,
-      consecutive_failures: 0,
-    })
-    .eq("id", sourceId);
-}
-
-async function hashData(data: Record<string, unknown>): Promise<string> {
-  const encoder = new TextEncoder();
-  const encoded = encoder.encode(JSON.stringify(data));
-  const hashBuffer = await crypto.subtle.digest("SHA-256", encoded);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-```
+Each agent (fetcher, parser, validator, storer) is a separate file in `lib/scraper/agents/`. The fetcher checks `robots.txt` and applies random delays. The parser calls `extractWithGemini`. The validator checks for empty/missing fields. The storer hashes content to detect duplicates before inserting into Supabase.
 
 ## Error Recovery and Retry Patterns
 
@@ -707,7 +456,7 @@ export async function withRetry<T>(
 }
 ```
 
-## Storing Scraped Data in Supabase with Change Tracking
+## Querying Scraped Data
 
 ```typescript
 // lib/scraper/query.ts
@@ -718,40 +467,22 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+// Get latest scraped data for a source
 export async function getLatestData(sourceId: string) {
   const { data, error } = await supabase
-    .from("scraped_data")
-    .select("*")
-    .eq("source_id", sourceId)
-    .order("scraped_at", { ascending: false })
-    .limit(1)
-    .single();
-
+    .from("scraped_data").select("*")
+    .eq("source_id", sourceId).order("scraped_at", { ascending: false })
+    .limit(1).single();
   if (error) throw new Error(`Query failed: ${error.message}`);
   return data;
 }
 
-export async function getChangeHistory(sourceId: string, limit = 10) {
-  const { data, error } = await supabase
-    .from("scraped_data")
-    .select("data, scraped_at, content_hash")
-    .eq("source_id", sourceId)
-    .order("scraped_at", { ascending: false })
-    .limit(limit);
-
-  if (error) throw new Error(`Query failed: ${error.message}`);
-  return data;
-}
-
+// Get sources not checked in 24+ hours
 export async function getStaleSources() {
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-
   const { data, error } = await supabase
-    .from("scrape_sources")
-    .select("*")
-    .eq("active", true)
+    .from("scrape_sources").select("*").eq("active", true)
     .or(`last_checked_at.is.null,last_checked_at.lt.${oneDayAgo}`);
-
   if (error) throw new Error(`Query failed: ${error.message}`);
   return data;
 }

@@ -1,238 +1,492 @@
 # Gemini-Powered Data Extraction Reference
 
-Using Gemini API to parse unstructured HTML, PDFs, and documents into structured JSON.
+Using Gemini API to parse unstructured HTML and PDFs into structured JSON.
 
-## Why Gemini for Extraction?
+## Why Use Gemini for Extraction?
 
-Traditional scraping breaks when websites change their HTML structure. Gemini-powered extraction is resilient — it understands content semantically, not structurally. Feed it messy HTML and get clean JSON back.
+Traditional scraping uses CSS selectors to find data on a page. This breaks whenever the website changes its HTML structure. Gemini can understand the meaning of content regardless of how the HTML is structured, making your scraper much more resilient.
 
-## Model Selection
+## Setup
 
-| Task | Model | Why |
-|------|-------|-----|
-| PDF parsing, large documents | `gemini-2.5-pro` | Handles long context, complex reasoning |
-| Quick page extraction | `gemini-2.0-flash` | Fast, cost-effective for simple extractions |
-| Classification (is page relevant?) | Flash Lite | Cheapest, fast yes/no decisions |
+```bash
+npm install @google/generative-ai
+```
+
+```bash
+# .env.local
+GEMINI_API_KEY=your_api_key_here
+```
+
+Get your API key from [aistudio.google.com](https://aistudio.google.com/).
 
 ## Core Extraction Function
 
 ```typescript
-// lib/scrapers/gemini-extractor.ts
+// lib/scraper/gemini-extract.ts
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+if (!process.env.GEMINI_API_KEY) {
+  throw new Error("GEMINI_API_KEY environment variable is not set");
+}
 
-export async function extractStructuredData<T>(
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+export async function extractWithGemini<T>(
   content: string,
-  outputSchema: string,
-  instructions: string,
-  model: "gemini-2.5-pro" | "gemini-2.0-flash" = "gemini-2.0-flash"
+  prompt: string
 ): Promise<T> {
-  const genModel = genAI.getGenerativeModel({ model });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-  const prompt = `You are a data extraction specialist. Extract structured data from the provided content.
+  // Clean HTML to reduce tokens
+  const cleanContent = content
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<(nav|header|footer)[\s\S]*?<\/\1>/gi, "")
+    .replace(/\s+/g, " ")
+    .substring(0, 30000);
 
-## Required Output Format (JSON)
-${outputSchema}
+  const fullPrompt = `${prompt}
 
-## Extraction Rules
-${instructions}
+IMPORTANT RULES:
+1. Return ONLY valid JSON — no markdown code fences, no explanation, no preamble
+2. If a field cannot be found, use null instead of guessing
+3. Dates should be in YYYY-MM-DD format
+4. Prices should be numbers (no currency symbols)
 
-## Content to Process
-${content}
+CONTENT:
+${cleanContent}`;
 
-IMPORTANT: Respond with ONLY valid JSON. No markdown code fences, no explanations.`;
+  try {
+    const result = await model.generateContent(fullPrompt);
+    const text = result.response.text().trim();
 
-  const result = await genModel.generateContent(prompt);
-  const text = result.response.text().trim();
+    // Strip code fences if present
+    const jsonStr = text
+      .replace(/^```json?\s*/i, "")
+      .replace(/```\s*$/i, "")
+      .trim();
 
-  // Clean markdown wrapping if present
-  const cleaned = text.replace(/^```json?\n?/, "").replace(/\n?```$/, "");
-  return JSON.parse(cleaned) as T;
+    return JSON.parse(jsonStr) as T;
+  } catch (err) {
+    throw new Error(
+      `Gemini extraction failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
 }
 ```
 
-## Prompt Templates
+## Prompt Templates for Common Extraction Tasks
 
-### Template 1: Table Data Extraction
+### Extract Product Listings
 
 ```typescript
-const schema = `{
-  "headers": ["string"],
-  "rows": [{"column_name": "value"}]
-}`;
+// lib/scraper/prompts/products.ts
+export const PRODUCT_LISTING_PROMPT = `Extract all product listings from this page.
 
-const instructions = `
-- Extract ALL rows from any tables found in the content
-- Use the table headers as JSON keys (lowercase, underscored)
-- Convert dates to YYYY-MM-DD format
-- Convert currencies to numbers (remove $ signs)
-- If a cell is empty, use null`;
+Return a JSON array where each item has:
+{
+  "name": "Product name",
+  "price": 29.99,
+  "currency": "AUD",
+  "description": "Short description",
+  "url": "Link to product page (relative URL is fine)",
+  "image_url": "Image URL",
+  "in_stock": true,
+  "rating": 4.5,
+  "review_count": 123
+}
+
+If a field is not available, use null.`;
 ```
 
-### Template 2: Contact Information
+### Extract News Articles
 
 ```typescript
-const schema = `{
-  "contacts": [{
-    "name": "string",
-    "email": "string | null",
-    "phone": "string | null",
-    "role": "string | null",
-    "organization": "string | null"
-  }]
-}`;
+// lib/scraper/prompts/articles.ts
+export const NEWS_ARTICLES_PROMPT = `Extract all news articles from this page.
 
-const instructions = `
-- Extract ALL people/contacts mentioned in the content
-- Normalize phone numbers to E.164 format if possible
-- If role or organization is not explicitly stated, infer from context or use null`;
+Return a JSON array where each item has:
+{
+  "title": "Article headline",
+  "summary": "First paragraph or summary text",
+  "author": "Author name",
+  "published_date": "YYYY-MM-DD",
+  "url": "Link to full article",
+  "category": "Category or section name",
+  "image_url": "Featured image URL"
+}
+
+If a field is not available, use null.`;
 ```
 
-### Template 3: Regulatory/Policy Updates
+### Extract Contact Information
 
 ```typescript
-const schema = `{
-  "updates": [{
-    "title": "string",
-    "effective_date": "YYYY-MM-DD | null",
-    "category": "visa | citizenship | work-permit | travel | general",
-    "summary": "string (2-3 sentences)",
-    "key_changes": ["string"],
-    "affected_groups": ["string"],
-    "source_section": "string"
-  }]
-}`;
+// lib/scraper/prompts/contacts.ts
+export const CONTACT_INFO_PROMPT = `Extract all contact information from this page.
 
-const instructions = `
-- Extract ALL policy or regulatory updates
-- Categorize each update into the specified categories
-- Summarize in plain English (no jargon)
-- List who is affected by each change
-- Note which section of the source page the info came from`;
+Return a JSON object:
+{
+  "company_name": "Name of the organization",
+  "phone_numbers": ["list of phone numbers"],
+  "email_addresses": ["list of email addresses"],
+  "physical_address": "Street address",
+  "city": "City",
+  "state": "State/Province",
+  "postcode": "Postal/ZIP code",
+  "country": "Country",
+  "social_media": {
+    "facebook": "URL or null",
+    "twitter": "URL or null",
+    "linkedin": "URL or null",
+    "instagram": "URL or null"
+  },
+  "business_hours": "Operating hours text"
+}
+
+If a field is not available, use null.`;
 ```
 
-### Template 4: Product/Service Listings
+### Extract Table Data
 
 ```typescript
-const schema = `{
-  "listings": [{
-    "name": "string",
-    "price": "number | null",
-    "currency": "string",
-    "description": "string",
-    "features": ["string"],
-    "url": "string | null",
-    "availability": "in-stock | out-of-stock | unknown"
-  }]
-}`;
+// lib/scraper/prompts/tables.ts
+export const TABLE_DATA_PROMPT = `Extract all data from the tables on this page.
 
-const instructions = `
-- Extract ALL products or services listed
-- Convert prices to numbers (e.g., "$49.99" → 49.99)
-- Default currency to AUD unless otherwise specified
-- Extract feature lists or bullet points as the features array`;
+Return a JSON object:
+{
+  "tables": [
+    {
+      "title": "Table title or caption if available",
+      "headers": ["Column 1", "Column 2", "Column 3"],
+      "rows": [
+        ["value1", "value2", "value3"],
+        ["value4", "value5", "value6"]
+      ]
+    }
+  ]
+}
+
+Preserve the original data values. Convert dates to YYYY-MM-DD format. Convert currency values to plain numbers.`;
 ```
 
-## PDF Extraction
+### Extract Government/Regulatory Data
 
 ```typescript
-// lib/scrapers/pdf-extractor.ts
-import { GoogleGenerativeAI } from "@google/generative-ai";
+// lib/scraper/prompts/regulatory.ts
+export const REGULATORY_DATA_PROMPT = `Extract regulatory or policy information from this government page.
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+Return a JSON array where each item has:
+{
+  "title": "Policy or regulation title",
+  "reference_number": "Official reference or ID",
+  "effective_date": "YYYY-MM-DD",
+  "category": "Category of regulation",
+  "status": "active | proposed | repealed | amended",
+  "summary": "Brief summary of the regulation",
+  "affected_parties": "Who this applies to",
+  "source_url": "Link to full document",
+  "last_updated": "YYYY-MM-DD"
+}
 
-export async function extractFromPDF(
+If a field is not available, use null.`;
+```
+
+### Extract Job Listings
+
+```typescript
+// lib/scraper/prompts/jobs.ts
+export const JOB_LISTINGS_PROMPT = `Extract all job listings from this page.
+
+Return a JSON array where each item has:
+{
+  "title": "Job title",
+  "company": "Company name",
+  "location": "Location (city, state, or remote)",
+  "salary_min": 80000,
+  "salary_max": 120000,
+  "salary_currency": "AUD",
+  "employment_type": "full-time | part-time | contract",
+  "description": "Brief job description (first 200 chars)",
+  "posted_date": "YYYY-MM-DD",
+  "url": "Link to full listing",
+  "skills": ["skill1", "skill2"]
+}
+
+If salary is not listed, use null for salary fields.`;
+```
+
+## PDF Parsing with Gemini
+
+For PDFs, first extract the text, then send it to Gemini:
+
+```typescript
+// lib/scraper/pdf-extract.ts
+import { extractWithGemini } from "./gemini-extract";
+
+// Using pdf-parse to extract text from PDFs
+// npm install pdf-parse
+export async function extractFromPdf<T>(
   pdfBuffer: Buffer,
-  instructions: string,
-  outputSchema: string
-) {
-  // Use gemini-2.5-pro for PDF (large context)
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
+  extractionPrompt: string
+): Promise<T> {
+  // Dynamic import for pdf-parse
+  const pdfParse = (await import("pdf-parse")).default;
 
-  const pdfPart = {
-    inlineData: {
-      data: pdfBuffer.toString("base64"),
-      mimeType: "application/pdf",
-    },
-  };
+  const pdfData = await pdfParse(pdfBuffer);
 
-  const prompt = `Extract structured data from this PDF document.
+  if (!pdfData.text || pdfData.text.trim().length === 0) {
+    throw new Error("PDF contains no extractable text (might be scanned/image-based)");
+  }
 
-## Output Schema
-${outputSchema}
-
-## Instructions
-${instructions}
-
-Respond with ONLY valid JSON.`;
-
-  const result = await model.generateContent([prompt, pdfPart]);
-  const text = result.response.text().trim();
-  const cleaned = text.replace(/^```json?\n?/, "").replace(/\n?```$/, "");
-  return JSON.parse(cleaned);
+  return await extractWithGemini<T>(pdfData.text, extractionPrompt);
 }
+
+// Extract from a PDF URL
+export async function extractFromPdfUrl<T>(
+  url: string,
+  extractionPrompt: string
+): Promise<T> {
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(30000),
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to download PDF: HTTP ${response.status}`);
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return await extractFromPdf<T>(buffer, extractionPrompt);
+}
+```
+
+### Example: Parse an Invoice PDF
+
+```typescript
+// Usage example
+import { extractFromPdfUrl } from "@/lib/scraper/pdf-extract";
+
+interface InvoiceData {
+  invoice_number: string;
+  date: string;
+  due_date: string;
+  vendor: string;
+  total: number;
+  currency: string;
+  line_items: Array<{
+    description: string;
+    quantity: number;
+    unit_price: number;
+    total: number;
+  }>;
+}
+
+const invoice = await extractFromPdfUrl<InvoiceData>(
+  "https://example.com/invoice.pdf",
+  `Extract invoice data from this document.
+  Return JSON with: invoice_number, date (YYYY-MM-DD), due_date (YYYY-MM-DD),
+  vendor name, total (number), currency (3-letter code),
+  and line_items array with description, quantity, unit_price, total.`
+);
 ```
 
 ## Validation of Extracted Data
 
-Always validate Gemini's output before storing:
+Always validate what Gemini returns. It can hallucinate or misinterpret data:
 
 ```typescript
-// lib/scrapers/validate-extraction.ts
-import { z } from "zod";
+// lib/scraper/validate-extraction.ts
 
-// Define expected schema with Zod
-const PolicyUpdateSchema = z.object({
-  title: z.string().min(5),
-  effective_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
-  category: z.enum(["visa", "citizenship", "work-permit", "travel", "general"]),
-  summary: z.string().min(20),
-  key_changes: z.array(z.string()).min(1),
-  affected_groups: z.array(z.string()),
-});
+interface ValidationRule {
+  field: string;
+  required: boolean;
+  type: "string" | "number" | "boolean" | "array" | "object" | "date";
+  minLength?: number;
+  min?: number;
+  max?: number;
+}
 
-const ExtractionResultSchema = z.object({
-  updates: z.array(PolicyUpdateSchema),
-});
+interface ValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+}
 
-export function validateExtraction(data: unknown) {
-  const result = ExtractionResultSchema.safeParse(data);
+export function validateExtraction(
+  data: Record<string, unknown>,
+  rules: ValidationRule[]
+): ValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
 
-  if (!result.success) {
-    console.error("Validation errors:", result.error.issues);
-    return { valid: false, errors: result.error.issues, data: null };
+  for (const rule of rules) {
+    const value = data[rule.field];
+
+    // Check required fields
+    if (rule.required && (value === null || value === undefined)) {
+      errors.push(`Required field "${rule.field}" is missing`);
+      continue;
+    }
+
+    if (value === null || value === undefined) continue;
+
+    // Type checks
+    switch (rule.type) {
+      case "string":
+        if (typeof value !== "string") {
+          errors.push(`Field "${rule.field}" should be a string, got ${typeof value}`);
+        } else if (rule.minLength && value.length < rule.minLength) {
+          warnings.push(
+            `Field "${rule.field}" is suspiciously short (${value.length} chars)`
+          );
+        }
+        break;
+
+      case "number":
+        if (typeof value !== "number" || isNaN(value)) {
+          errors.push(`Field "${rule.field}" should be a number`);
+        } else {
+          if (rule.min !== undefined && value < rule.min) {
+            errors.push(`Field "${rule.field}" is below minimum (${value} < ${rule.min})`);
+          }
+          if (rule.max !== undefined && value > rule.max) {
+            errors.push(`Field "${rule.field}" is above maximum (${value} > ${rule.max})`);
+          }
+        }
+        break;
+
+      case "date":
+        if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+          errors.push(`Field "${rule.field}" should be a date in YYYY-MM-DD format`);
+        } else {
+          const date = new Date(value);
+          if (isNaN(date.getTime())) {
+            errors.push(`Field "${rule.field}" is not a valid date`);
+          }
+        }
+        break;
+
+      case "array":
+        if (!Array.isArray(value)) {
+          errors.push(`Field "${rule.field}" should be an array`);
+        }
+        break;
+
+      case "boolean":
+        if (typeof value !== "boolean") {
+          errors.push(`Field "${rule.field}" should be a boolean`);
+        }
+        break;
+
+      case "object":
+        if (typeof value !== "object" || Array.isArray(value)) {
+          errors.push(`Field "${rule.field}" should be an object`);
+        }
+        break;
+    }
   }
 
-  return { valid: true, errors: [], data: result.data };
+  return { valid: errors.length === 0, errors, warnings };
 }
 ```
 
-## Classification Before Extraction (Cost Optimization)
-
-Use Flash Lite to pre-filter pages before expensive extraction:
+### Usage
 
 ```typescript
-// lib/scrapers/classify-page.ts
-export async function isPageRelevant(
-  content: string,
-  topic: string
-): Promise<boolean> {
-  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+import { validateExtraction } from "@/lib/scraper/validate-extraction";
 
-  const result = await model.generateContent(
-    `Is this page about "${topic}"? Respond with only YES or NO.\n\n${content.slice(0, 2000)}`
-  );
+const rules = [
+  { field: "title", required: true, type: "string" as const, minLength: 3 },
+  { field: "price", required: true, type: "number" as const, min: 0, max: 1000000 },
+  { field: "published_date", required: false, type: "date" as const },
+  { field: "tags", required: false, type: "array" as const },
+];
 
-  return result.response.text().trim().toUpperCase() === "YES";
+const result = validateExtraction(extractedData, rules);
+
+if (!result.valid) {
+  console.error("Extraction validation failed:", result.errors);
+  // Optionally retry with a more specific prompt
+}
+
+if (result.warnings.length > 0) {
+  console.warn("Extraction warnings:", result.warnings);
 }
 ```
 
-## Best Practices
+## Re-Extraction on Failure
 
-1. **Trim content before sending** — Remove nav, footer, scripts to reduce tokens and cost
-2. **Use the right model tier** — Flash for simple extractions, Pro for complex/long documents
-3. **Always validate output** — Gemini can hallucinate data, always verify with Zod
-4. **Cache extractions** — Store results in Supabase to avoid re-processing
-5. **Handle rate limits** — Gemini has per-minute rate limits, add retry with backoff
-6. **Chunk large documents** — Split very long content into sections for better accuracy
+If Gemini returns invalid data, retry with a more specific prompt:
+
+```typescript
+// lib/scraper/retry-extract.ts
+import { extractWithGemini } from "./gemini-extract";
+import { validateExtraction, type ValidationRule } from "./validate-extraction";
+
+export async function extractWithRetry<T>(
+  content: string,
+  prompt: string,
+  rules: ValidationRule[],
+  maxRetries = 2
+): Promise<T> {
+  let lastErrors: string[] = [];
+
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    const currentPrompt =
+      attempt === 1
+        ? prompt
+        : `${prompt}
+
+PREVIOUS ATTEMPT FAILED WITH THESE ERRORS:
+${lastErrors.map((e) => `- ${e}`).join("\n")}
+
+Please fix these issues in your response.`;
+
+    try {
+      const data = await extractWithGemini<T>(content, currentPrompt);
+      const validation = validateExtraction(
+        data as Record<string, unknown>,
+        rules
+      );
+
+      if (validation.valid) {
+        return data;
+      }
+
+      lastErrors = validation.errors;
+      console.warn(`Attempt ${attempt} validation failed:`, validation.errors);
+    } catch (err) {
+      lastErrors = [err instanceof Error ? err.message : String(err)];
+      console.warn(`Attempt ${attempt} extraction error:`, lastErrors);
+    }
+  }
+
+  throw new Error(
+    `Extraction failed after ${maxRetries + 1} attempts. Last errors: ${lastErrors.join(", ")}`
+  );
+}
+```
+
+## Choosing the Right Gemini Model
+
+| Task | Recommended Model | Why |
+|------|------------------|-----|
+| Simple table extraction | `gemini-2.0-flash` | Fast, cheap, good for structured data |
+| Complex multi-page documents | `gemini-2.5-pro` | Better reasoning for complex layouts |
+| Quick classification (is this page relevant?) | `gemini-2.0-flash` | Only needs a yes/no answer |
+| PDF with mixed content (text + tables + images) | `gemini-2.5-pro` | Handles multi-modal content better |
+
+## Cost Management
+
+Gemini charges per token. Here is how to keep costs down:
+
+1. **Clean HTML before sending** - Remove scripts, styles, nav, footer, comments
+2. **Truncate to essentials** - Only send the relevant portion of the page (30,000 chars max)
+3. **Cache results** - Use content hashing to avoid re-processing unchanged pages
+4. **Use Flash for simple tasks** - `gemini-2.0-flash` is much cheaper than Pro
+5. **Batch when possible** - Send multiple small extractions in one prompt if they share the same page
